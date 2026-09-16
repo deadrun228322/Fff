@@ -129,3 +129,138 @@ int main() {
 
     return 0;
 }
+#include <algorithm>
+#include <iomanip>
+#include <iostream>
+#include <limits>
+#include <random>
+#include <vector>
+
+using namespace std;
+
+int main() {
+    // ---------- Параметры системы ----------
+    // Условие устойчивости: lambda < SERVERS * mu
+    const double lambda = 0.2;      // интенсивность входного потока
+    const double mu     = 0.5;      // интенсивность обслуживания одним сервером
+
+    const int SERVERS = 2;          // число серверов
+    const int N       = 30;         // задач в одном прогоне
+    const int RUNS    = 100000;     // число прогонов
+
+    // ---------- ГПСЧ ----------
+    mt19937 mt(42);
+    exponential_distribution<> arrival(lambda);  // интервалы прихода ~ Exp(lambda)
+    exponential_distribution<> service(mu);      // время обслуживания ~ Exp(mu)
+
+    const double INF = numeric_limits<double>::infinity();
+
+    // ---------- Первый проход: собираем времена ожидания и ищем максимум ----------
+    vector<double> allWaits;                 // все времена ожидания (для второго прохода)
+    allWaits.reserve((size_t)RUNS * N);
+    double maxWait = 0.0;
+
+    for (int run = 0; run < RUNS; ++run) {
+        int busy = 0;
+        vector<double> queueArrival;
+        vector<double> busyUntil(SERVERS, INF);
+
+        int inCount = 0, outCount = 0;
+        double T1 = arrival(mt);
+
+        while (inCount < N || outCount < N) {
+            double T2 = INF;
+            int freeIdx = -1;
+            for (int s = 0; s < SERVERS; ++s)
+                if (busyUntil[s] < T2) { T2 = busyUntil[s]; freeIdx = s; }
+
+            if (T1 <= T2) {
+                double systemtime = T1;
+                ++inCount;
+
+                if (busy < SERVERS) {
+                    int s = -1;
+                    for (int i = 0; i < SERVERS; ++i)
+                        if (busyUntil[i] == INF) { s = i; break; }
+                    ++busy;
+                    busyUntil[s] = systemtime + service(mt);
+                    allWaits.push_back(0.0);
+                } else {
+                    queueArrival.push_back(systemtime);
+                }
+
+                T1 = (inCount < N) ? systemtime + arrival(mt) : INF;
+            } else {
+                double systemtime = T2;
+                --busy;
+                busyUntil[freeIdx] = INF;
+                ++outCount;
+
+                if (!queueArrival.empty()) {
+                    uniform_int_distribution<> pick(0, (int)queueArrival.size() - 1);
+                    int idx = pick(mt);
+                    double arr = queueArrival[idx];
+                    queueArrival[idx] = queueArrival.back();
+                    queueArrival.pop_back();
+
+                    double wait = systemtime - arr;
+                    if (wait > maxWait) maxWait = wait;
+                    allWaits.push_back(wait);
+
+                    ++busy;
+                    busyUntil[freeIdx] = systemtime + service(mt);
+                }
+            }
+        }
+    }
+
+    // ---------- Разбиваем [0, maxWait] на 20 интервалов ----------
+    const int BINS = 20;
+    double BW = (maxWait > 0.0) ? maxWait / BINS : 1.0;
+    vector<long long> hist(BINS, 0);
+
+    double waitSum = 0.0;
+    for (double w : allWaits) {
+        waitSum += w;
+        int b = (int)(w / BW);
+        if (b < 0) b = 0;
+        if (b >= BINS) b = BINS - 1;         // максимум попадает в последний интервал
+        hist[b]++;
+    }
+    long long totalCount = (long long)allWaits.size();
+
+    // ---------- Вывод ----------
+    cout << fixed << setprecision(4);
+    cout << "Параметры: lambda = " << lambda
+         << ", mu = " << mu
+         << ", серверов = " << SERVERS
+         << ", прогонов = " << RUNS
+         << ", задач в прогоне = " << N << "\n\n";
+
+    cout << "Среднее время ожидания: "
+         << (totalCount ? waitSum / totalCount : 0.0) << "\n";
+    cout << "Максимальное время ожидания: " << maxWait << "\n";
+    cout << "Ширина интервала: " << BW << "\n\n";
+
+    cout << "Эмпирическая функция распределения F(t) и плотность f(t):\n";
+    cout << setw(8)  << "N"
+         << setw(14) << "интервал"
+         << setw(12) << "f(t)"
+         << setw(12) << "F(t)" << "\n";
+
+    long long acc = 0;
+    for (int i = 0; i < BINS; ++i) {
+        acc += hist[i];
+        double t0 = i * BW;
+        double t1 = t0 + BW;
+        double density = (double)hist[i] / (totalCount * BW); // f(t) = hits / (n * ширина)
+        double F       = (double)acc / totalCount;            // F(t)
+
+        cout << setw(8)  << (i + 1)
+             << setw(14) << (to_string((int)t0) + "-" + to_string((int)t1))
+             << setw(12) << density
+             << setw(12) << F << "\n";
+    }
+
+    return 0;
+}
